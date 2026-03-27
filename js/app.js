@@ -2809,7 +2809,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Listener for Pocketbase Sync updates
     window.addEventListener('library-changed', () => {
-        const path = window.location.pathname;
+        const path = (window.location.pathname || '/').replace(/\/+$/, '') || '/';
         if (path === '/library') {
             UIRenderer.instance.renderLibraryPage();
         } else if (path === '/' || path === '/home') {

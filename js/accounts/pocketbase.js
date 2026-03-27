@@ -201,12 +201,21 @@ const syncManager = {
         window.dispatchEvent(new HashChangeEvent('hashchange'));
     },
 
+    async waitForSyncIdle(maxMs = 45000) {
+        const start = Date.now();
+        while (this._isSyncing && Date.now() - start < maxMs) {
+            await new Promise((r) => setTimeout(r, 50));
+        }
+    },
+
     async pullSyncApiIntoLocal() {
         const user = authManager.user;
-        if (!user || this._isSyncing) return false;
+        if (!user) return false;
+
+        await this.waitForSyncIdle();
 
         const now = Date.now();
-        if (now - this._lastPullSyncApiAt < 8000) return false;
+        if (now - this._lastPullSyncApiAt < 2500) return false;
         this._lastPullSyncApiAt = now;
 
         try {

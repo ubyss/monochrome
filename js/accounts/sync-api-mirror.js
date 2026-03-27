@@ -16,7 +16,10 @@ export async function fetchLibraryFromSyncApi() {
     const res = await fetch(`${base}/api/library`, {
         headers: { Authorization: `Bearer ${jwt}` },
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+        console.warn('[Sync API] GET /api/library failed', res.status);
+        return null;
+    }
 
     let json;
     try {

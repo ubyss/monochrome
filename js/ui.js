@@ -1795,6 +1795,8 @@ export class UIRenderer {
     async renderLibraryPage() {
         this.showPage('library');
 
+        await syncManager.pullSyncApiIntoLocal();
+
         const tracksContainer = document.getElementById('library-tracks-container');
         const videosTabContent = document.getElementById('library-tab-videos');
         const albumsContainer = document.getElementById('library-albums-container');

@@ -26,6 +26,7 @@ import { db } from './db.js';
 import { showNotification } from './downloads.js';
 import { syncManager } from './accounts/pocketbase.js';
 import { authManager } from './accounts/auth.js';
+import { pingAppwriteBackend } from './lib/appwrite.js';
 import { registerSW } from 'virtual:pwa-register';
 import { openEditProfile } from './profile.js';
 import { ThemeStore } from './themeStore.js';
@@ -381,6 +382,13 @@ async function uploadCoverImage(file) {
 
 document.addEventListener('DOMContentLoaded', async () => {
     await modernSettings.waitPending();
+
+    try {
+        const pingResult = await pingAppwriteBackend();
+        console.log('[Appwrite] Ping OK:', pingResult);
+    } catch (err) {
+        console.warn('[Appwrite] Ping failed:', err);
+    }
 
     if (import.meta.env.DEV) {
         window.monochrome = {

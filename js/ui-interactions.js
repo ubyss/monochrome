@@ -346,6 +346,7 @@ export function initializeUIInteractions(player, api, ui) {
 
                     positionMenu(contextMenu, e.clientX, e.clientY);
                     contextMenu._contextTrack = track;
+                    contextMenu._contextTrackItem = null;
                 }
             }
         });

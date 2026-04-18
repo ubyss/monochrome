@@ -2111,6 +2111,11 @@ input[type='search']::-webkit-search-cancel-button {
     grid-template-columns: 40px 1fr 32px auto;
 }
 
+#playlist-detail-recommended .track-item-actions {
+    gap: 0.125rem;
+    min-width: 5.5rem;
+}
+
 @media (max-width: 1100px) {
     #home-recommended-songs,
     #artist-detail-tracks,
@@ -2256,17 +2261,40 @@ input[type='search']::-webkit-search-cancel-button {
     pointer-events: auto;
 }
 
+.track-item-thumb {
+    position: relative;
+    width: 40px;
+    height: 40px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.track-item-thumb .track-number {
+    width: 100%;
+    height: 100%;
+    min-height: 40px;
+}
+
 .track-checkbox {
     display: none;
-    width: 18px;
-    height: 18px;
+    width: 20px;
+    height: 20px;
     cursor: pointer;
-    color: var(--muted-foreground);
+    color: var(--foreground);
     flex-shrink: 0;
-    transition: color var(--transition-fast);
+    transition:
+        color var(--transition-fast),
+        background-color var(--transition-fast);
     position: absolute;
-    left: 8px;
-    z-index: 1;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 3;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--secondary) 88%, transparent);
+    box-shadow: 0 1px 3px rgb(0 0 0 / 0.15);
 }
 
 .multi-select-mode .track-checkbox,
@@ -2277,11 +2305,21 @@ body.multi-select-mode .track-checkbox {
 }
 
 .track-checkbox:hover {
-    color: var(--foreground);
+    color: var(--highlight);
+    background: color-mix(in srgb, var(--secondary) 96%, transparent);
 }
 
 .track-checkbox.checked {
-    color: var(--primary);
+    color: var(--highlight);
+    background: rgb(var(--highlight-rgb) / 0.22);
+}
+
+.track-item.playing .track-checkbox {
+    color: var(--highlight);
+}
+
+.track-item.playing .track-checkbox.checked {
+    background: rgb(var(--highlight-rgb) / 0.28);
 }
 
 .track-item.selected {
@@ -2290,29 +2328,40 @@ body.multi-select-mode .track-checkbox {
 
 body.multi-select-mode .track-item {
     cursor: default;
-    padding-left: 36px;
 }
 
 body.multi-select-mode .track-item:hover {
     transform: none;
 }
 
+body.multi-select-mode .track-item-thumb::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: rgb(0, 0, 0, 0.2);
+    border-radius: var(--radius-sm);
+    pointer-events: none;
+    z-index: 1;
+}
+
 .selection-bar {
     display: none;
     position: fixed;
-    bottom: 100px;
-    left: 50%;
-    transform: translateX(-50%);
-    background: var(--primary);
-    color: var(--primary-foreground);
-    padding: 12px 20px;
-    border-radius: 24px;
-    font-size: 0.9rem;
-    font-weight: 500;
-    z-index: 1000;
-    box-shadow: 0 4px 20px rgb(0, 0, 0, 0.3);
+    right: max(1rem, calc(2% + 8px));
+    bottom: calc(var(--player-bar-height-desktop) + 1.25rem);
+    width: min(440px, calc(100vw - 2rem));
+    flex-direction: column;
+    align-items: stretch;
     gap: 12px;
-    align-items: center;
+    background: var(--card);
+    color: var(--foreground);
+    border: 1px solid var(--border);
+    padding: 12px;
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+    font-weight: 500;
+    z-index: 2200;
+    box-shadow: var(--shadow-2xl);
 }
 
 .selection-bar.visible {
@@ -2320,27 +2369,112 @@ body.multi-select-mode .track-item:hover {
 }
 
 .selection-bar .selection-count {
-    color: var(--primary-foreground);
+    font-size: 0.82rem;
+    line-height: 1.2;
+    letter-spacing: 0.01em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
+}
+
+.selection-bar .bulk-selection-row {
+    display: flex;
+    flex-wrap: nowrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+}
+
+.selection-bar .bulk-selection-row button[data-action='clear-selection'] {
+    flex-shrink: 0;
+    width: 26px;
+    height: 26px;
+    min-width: 26px;
+    padding: 0;
+    font-size: 1rem;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    color: inherit;
+}
+
+.selection-bar .bulk-selection-row button[data-action='clear-selection']:hover,
+.selection-bar .bulk-selection-row button[data-action='clear-selection']:active,
+.selection-bar .bulk-selection-row button[data-action='clear-selection']:focus-visible {
+    border: none;
+    background: transparent;
+    color: inherit;
+    outline: none;
 }
 
 .selection-bar .selection-actions {
-    display: flex;
+    display: grid;
     gap: 8px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.selection-bar .selection-actions--secondary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .selection-bar button {
-    background: transparent;
-    border: 1px solid var(--primary-foreground);
-    color: var(--primary-foreground);
-    padding: 6px 12px;
-    border-radius: 16px;
+    background: var(--secondary);
+    border: 1px solid var(--border);
+    color: var(--foreground);
+    min-height: 32px;
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
     cursor: pointer;
-    font-size: 0.85rem;
-    transition: background var(--transition-fast);
+    font-size: 0.78rem;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition:
+        background var(--transition-fast),
+        border-color var(--transition-fast),
+        color var(--transition-fast);
+}
+
+.selection-bar .selection-actions--primary button {
+    background: rgb(var(--highlight-rgb), 0.14);
+    border-color: rgb(var(--highlight-rgb), 0.28);
 }
 
 .selection-bar button:hover {
-    background: rgb(255, 255, 255, 0.2);
+    background: rgb(var(--highlight-rgb), 0.18);
+    border-color: var(--highlight);
+}
+
+.selection-bar .selection-actions button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+
+.selection-bar .selection-actions button[hidden] {
+    display: none !important;
+}
+
+@media (max-width: 768px) {
+    .selection-bar {
+        right: 0.5rem;
+        width: calc(100vw - 1rem);
+        bottom: calc(var(--player-bar-height-mobile) + 0.25rem);
+        padding: 10px;
+    }
+
+    .selection-bar .selection-actions {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .selection-bar .selection-actions--secondary {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
 }
 
 .track-number {
@@ -6138,7 +6272,7 @@ img[src=''] {
 
 .modal-list {
     margin: 1rem 0;
-    max-height: 200px;
+    max-height: 320px;
     overflow-y: auto;
 }
 
@@ -6150,6 +6284,89 @@ img[src=''] {
     display: flex;
     justify-content: space-between;
     align-items: center;
+}
+
+#playlist-select-modal .playlist-select-modal-content {
+    width: min(400px, 92vw);
+    max-width: 640px;
+    max-height: min(480px, 80vh);
+    overflow: hidden;
+}
+
+#playlist-select-modal .playlist-select-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+
+#playlist-select-modal .playlist-select-close {
+    border: none;
+    background: transparent;
+    color: var(--foreground);
+    font-size: 1.4rem;
+    line-height: 1;
+    padding: 0;
+    cursor: pointer;
+}
+
+#playlist-select-modal .modal-list {
+    margin: 0.75rem 0 0;
+    max-height: min(260px, 46vh);
+}
+
+#playlist-select-modal .modal-option {
+    padding: 0.6rem 0.25rem;
+}
+
+.playlist-select-item {
+    width: 100%;
+    border: none;
+    background: transparent;
+    color: var(--foreground);
+    text-align: left;
+    display: flex;
+    justify-content: normal;
+    align-items: center;
+    gap: 16px;
+}
+
+.playlist-select-cover {
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius-sm);
+    object-fit: cover;
+    flex-shrink: 0;
+    background: var(--muted);
+}
+
+.playlist-select-meta {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.playlist-select-name {
+    font-size: 0.9rem;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.playlist-select-count {
+    font-size: 0.8rem;
+    color: var(--muted-foreground);
+}
+
+.playlist-select-empty {
+    padding: 0.75rem 0.25rem;
+    color: var(--muted-foreground);
+}
+
+#playlist-select-modal .modal-actions {
+    margin-top: 0.9rem;
+    justify-content: flex-end;
 }
 
 .modal-option:hover {

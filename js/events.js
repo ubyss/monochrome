@@ -19,6 +19,7 @@ import { showNotification, downloadTrackWithMetadata, downloadAlbum, downloadPla
 import { downloadQualitySettings } from './storage.js';
 import { updateTabTitle, navigate } from './router.js';
 import { db } from './db.js';
+import { MusicAPI } from './music-api.js';
 import { syncManager } from './accounts/pocketbase.js';
 import { waveformGenerator } from './waveform.js';
 import { audioContextManager } from './audio-context.js';
@@ -54,7 +55,20 @@ import {
     trackStartMix,
     trackEvent,
 } from './analytics.js';
-import { SVG_BIN, SVG_MUTE, SVG_PAUSE, SVG_PLAY, SVG_VOLUME, SVG_CHECKBOX, SVG_CHECKBOX_CHECKED } from './icons.js';
+import {
+    SVG_BIN,
+    SVG_DOWNLOAD,
+    SVG_HEART,
+    SVG_LIST,
+    SVG_MUTE,
+    SVG_PAUSE,
+    SVG_PLAY,
+    SVG_PLUS,
+    SVG_SQUARE_PEN,
+    SVG_VOLUME,
+    SVG_CHECKBOX,
+    SVG_CHECKBOX_CHECKED,
+} from './icons.js';
 
 let currentTrackIdForWaveform = null;
 
@@ -148,6 +162,62 @@ function getSelectedTracks() {
     return Array.from(trackSelection.selectedIds);
 }
 
+function buildUniqueSelectedTrackList(mainContent) {
+    if (!mainContent) return [];
+    const byKey = new Map();
+    mainContent.querySelectorAll('.track-item').forEach((item) => {
+        if (!trackSelection.selectedIds.has(item.dataset.trackId)) return;
+        const track = trackDataStore.get(item);
+        if (!track) return;
+        const key = `${track.id}:${track.type || 'track'}`;
+        if (!byKey.has(key)) byKey.set(key, track);
+    });
+    return [...byKey.values()];
+}
+
+function getMoveRemovePlaylistSelectionContext() {
+    const mainContent = document.querySelector('main.main-content');
+    const selectedEls = mainContent
+        ? Array.from(mainContent.querySelectorAll('.track-item.selected'))
+        : [];
+    const playlistPage = document.getElementById('page-playlist');
+    const onUserPlaylistPath = /^\/userplaylist\/[^/]+/.test(window.location.pathname);
+    const selectionOnUserPlaylistView =
+        onUserPlaylistPath &&
+        !!playlistPage?.classList.contains('active') &&
+        selectedEls.length > 0 &&
+        selectedEls.every((el) => playlistPage.contains(el));
+
+    const libraryPage = document.getElementById('page-library');
+    const likedTracksTab = document.getElementById('library-tab-tracks');
+    const likedTracksContainer = document.getElementById('library-tracks-container');
+    const selectionOnLikedTracks =
+        window.location.pathname === '/library' &&
+        !!libraryPage?.classList.contains('active') &&
+        !!likedTracksTab?.classList.contains('active') &&
+        !!likedTracksContainer &&
+        selectedEls.length > 0 &&
+        selectedEls.every((el) => likedTracksContainer.contains(el));
+
+    return {
+        selectedEls,
+        selectionOnUserPlaylistView,
+        selectionOnLikedTracks,
+        userPlaylistIdMatch: window.location.pathname.match(/^\/userplaylist\/([^/]+)/),
+    };
+}
+
+function uniqueTracksFromSelectedTrackItems() {
+    const byKey = new Map();
+    document.querySelectorAll('.track-item.selected').forEach((item) => {
+        const track = trackDataStore.get(item);
+        if (!track) return;
+        const key = `${track.id}:${track.type || 'track'}`;
+        if (!byKey.has(key)) byKey.set(key, track);
+    });
+    return [...byKey.values()];
+}
+
 function updateCheckbox(checkbox, checked) {
     if (checkbox) {
         checkbox.innerHTML = checked ? SVG_CHECKBOX_CHECKED(18) : SVG_CHECKBOX(18);
@@ -171,7 +241,7 @@ function toggleTrackSelection(trackItem, ctrlHeld, shiftHeld) {
         }
         trackSelection.lastClickedId = trackId;
     } else if (shiftHeld && trackSelection.lastClickedId && trackSelection.lastClickedId !== trackId) {
-        const parentList = trackItem.closest('.track-list') || trackItem.closest('#main-content');
+        const parentList = trackItem.closest('.track-list') || trackItem.closest('.main-content');
         const allTrackElements = Array.from(parentList.querySelectorAll('.track-item'));
         const lastIndex = allTrackElements.findIndex((el) => el.dataset.trackId === trackSelection.lastClickedId);
         const currentIndex = allTrackElements.findIndex((el) => el.dataset.trackId === trackId);
@@ -201,80 +271,203 @@ function toggleTrackSelection(trackItem, ctrlHeld, shiftHeld) {
 
     trackSelection.isSelecting = trackSelection.selectedIds.size > 0;
     document.body.classList.toggle('multi-select-mode', trackSelection.isSelecting);
+    document.dispatchEvent(new CustomEvent('track-selection-changed'));
 }
 
-function showMultiSelectPlaylistModal(tracks) {
-    const modal = document.createElement('div');
-    modal.className = 'modal-overlay';
-    modal.style.cssText =
-        'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; z-index: 10000;';
-    modal.innerHTML = `
-        <div class="modal-content" style="background: var(--card); border-radius: var(--radius); padding: 1.5rem; min-width: 350px; max-width: 90%; max-height: 80vh; overflow-y: auto; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.75rem;">
-                <h3 style="margin: 0;">Add to Playlist</h3>
-                <button class="modal-close" style="background: none; border: none; color: var(--foreground); font-size: 1.5rem; cursor: pointer; padding: 0; line-height: 1;">&times;</button>
-            </div>
-            <div class="playlist-body" style="max-height: 300px; overflow-y: auto;">
-                <div class="create-new-playlist" style="padding: 12px; cursor: pointer; border-bottom: 1px solid var(--border); color: var(--primary); font-weight: 500;">
-                    + Create new playlist
-                </div>
-                <div class="playlist-list"></div>
-            </div>
-        </div>
-    `;
+function showMultiSelectPlaylistModal(tracks, options = {}) {
+    const { mode = 'add', sourcePlaylistId = null, sourceFromLikes = false, ui = null } = options;
+    const isMove = mode === 'move' && (sourcePlaylistId || sourceFromLikes);
+    const title = isMove ? 'Move to playlist' : 'Add to playlist';
+    const api = MusicAPI.instance;
+    const modal = document.getElementById('playlist-select-modal');
+    const listEl = document.getElementById('playlist-select-list');
+    const closeBtn = document.getElementById('playlist-select-close');
+    const createBtn = document.getElementById('playlist-select-create');
+    const overlay = modal.querySelector('.modal-overlay');
+    const titleEl = document.getElementById('playlist-select-title');
+    titleEl.textContent = title;
 
     const closeModal = () => {
-        modal.remove();
-        document.body.style.overflow = '';
+        modal.classList.remove('active');
+        cleanup();
     };
 
-    modal.querySelector('.modal-close').addEventListener('click', closeModal);
-    modal.addEventListener('click', (e) => {
-        if (e.target === modal) closeModal();
-    });
+    const finishMoveFromSource = async () => {
+        const mainEl = document.querySelector('.main-content');
+        const scrollTop = mainEl?.scrollTop;
+        if (ui) {
+            await ui.renderPlaylistPage(sourcePlaylistId, 'user');
+        }
+        if (mainEl && scrollTop != null) mainEl.scrollTop = scrollTop;
+        document.dispatchEvent(new CustomEvent('bulk-selection-clear'));
+    };
 
-    document.body.appendChild(modal);
-    document.body.style.overflow = 'hidden';
-
-    db.getPlaylists(true).then((playlists) => {
-        const listEl = modal.querySelector('.playlist-list');
-        if (playlists.length === 0) {
-            listEl.innerHTML = '<div style="padding: 12px; color: var(--muted-foreground);">No playlists yet</div>';
+    const applyPlaylistPick = async (targetPlaylistId) => {
+        if (isMove && sourcePlaylistId && targetPlaylistId === sourcePlaylistId) {
+            showNotification('Choose a different playlist');
+            return;
+        }
+        for (const track of tracks) {
+            await db.addTrackToPlaylist(targetPlaylistId, track);
+        }
+        syncManager.syncUserPlaylist(await db.getPlaylist(targetPlaylistId), 'update');
+        if (isMove) {
+            if (sourceFromLikes) {
+                for (const track of tracks) {
+                    const ty = track.type || 'track';
+                    if (await db.isFavorite(ty, track.id)) {
+                        await db.toggleFavorite(ty, track);
+                        syncManager.syncLibraryItem(ty, track, false);
+                    }
+                }
+                const mainEl = document.querySelector('.main-content');
+                const scrollTop = mainEl?.scrollTop;
+                if (ui) {
+                    await ui.renderLibraryPage();
+                }
+                if (mainEl && scrollTop != null) mainEl.scrollTop = scrollTop;
+                document.dispatchEvent(new CustomEvent('bulk-selection-clear'));
+                showNotification(`Moved ${tracks.length} song${tracks.length === 1 ? '' : 's'}`);
+            } else {
+                for (const track of tracks) {
+                    await db.removeTrackFromPlaylist(sourcePlaylistId, track.id, track.type || 'track');
+                }
+                syncManager.syncUserPlaylist(await db.getPlaylist(sourcePlaylistId), 'update');
+                await finishMoveFromSource();
+                showNotification(`Moved ${tracks.length} song${tracks.length === 1 ? '' : 's'}`);
+            }
         } else {
-            listEl.innerHTML = playlists
+            showNotification(`Added ${tracks.length} song${tracks.length === 1 ? '' : 's'} to playlist`);
+        }
+        closeModal();
+    };
+
+    const renderModal = async () => {
+        const playlists = await db.getPlaylists(true);
+        const filtered =
+            isMove && sourcePlaylistId ? playlists.filter((p) => p.id !== sourcePlaylistId) : playlists;
+        const getPlaylistCoverUrl = (playlist) => {
+            const fallbackCover = 'assets/appicon.png';
+            const coverCandidate =
+                playlist?.cover ||
+                playlist?.image ||
+                (Array.isArray(playlist?.images) && playlist.images.length > 0 ? playlist.images[0] : null) ||
+                playlist?.tracks?.find((track) => track?.album?.cover)?.album?.cover ||
+                fallbackCover;
+            if (coverCandidate.startsWith('http') || coverCandidate.startsWith('data:') || coverCandidate.startsWith('/')) {
+                return coverCandidate;
+            }
+            return api.getCoverUrl(coverCandidate);
+        };
+
+        if (filtered.length === 0) {
+            listEl.innerHTML = '<div class="playlist-select-empty">No playlists yet</div>';
+        } else {
+            listEl.innerHTML = filtered
                 .map(
                     (p) => `
-                <div class="playlist-item" data-playlist-id="${p.id}" style="padding: 12px; cursor: pointer; border-bottom: 1px solid var(--border);">
-                    <span>${escapeHtml(p.name)}</span>
-                    <span style="color: var(--muted-foreground); font-size: 0.85rem; margin-left: 8px;">${p.tracks?.length || 0} tracks</span>
+                <div class="modal-option playlist-select-item" data-id="${p.id}">
+                    <img src="${getPlaylistCoverUrl(p)}" alt="${escapeHtml(p.name)} cover" class="playlist-select-cover" loading="lazy">
+                    <span class="playlist-select-meta">
+                        <span class="playlist-select-name">${escapeHtml(p.name)}</span>
+                        <span class="playlist-select-count">${p.tracks?.length || 0} tracks</span>
+                    </span>
                 </div>
             `
                 )
                 .join('');
         }
+    };
 
-        listEl.querySelectorAll('.playlist-item').forEach((item) => {
-            item.addEventListener('click', async () => {
-                const playlistId = item.dataset.playlistId;
-                for (const track of tracks) {
-                    await db.addTrackToPlaylist(playlistId, track);
+    const handleOptionClick = async (e) => {
+        const option = e.target.closest('.modal-option');
+        if (!option) return;
+        await applyPlaylistPick(option.dataset.id);
+    };
+
+    const handleCreateClick = () => {
+        const name = prompt('Playlist name:');
+        if (!name) return;
+        if (isMove) {
+            db.createPlaylist(name, tracks).then(async () => {
+                if (sourceFromLikes) {
+                    for (const track of tracks) {
+                        const ty = track.type || 'track';
+                        if (await db.isFavorite(ty, track.id)) {
+                            await db.toggleFavorite(ty, track);
+                            syncManager.syncLibraryItem(ty, track, false);
+                        }
+                    }
+                    const mainEl = document.querySelector('.main-content');
+                    const scrollTop = mainEl?.scrollTop;
+                    if (ui) {
+                        await ui.renderLibraryPage();
+                    }
+                    if (mainEl && scrollTop != null) mainEl.scrollTop = scrollTop;
+                } else {
+                    for (const track of tracks) {
+                        await db.removeTrackFromPlaylist(sourcePlaylistId, track.id, track.type || 'track');
+                    }
+                    syncManager.syncUserPlaylist(await db.getPlaylist(sourcePlaylistId), 'update');
+                    await finishMoveFromSource();
                 }
-                syncManager.syncUserPlaylist(await db.getPlaylist(playlistId), 'update');
-                showNotification(`Added ${tracks.length} tracks to playlist`);
+                document.dispatchEvent(new CustomEvent('bulk-selection-clear'));
+                showNotification(`Moved ${tracks.length} song${tracks.length === 1 ? '' : 's'} to "${name}"`);
                 closeModal();
             });
-        });
-    });
-
-    modal.querySelector('.create-new-playlist').addEventListener('click', () => {
-        const name = prompt('Playlist name:');
-        if (name) {
-            db.createPlaylist(name, tracks).then((playlist) => {
+        } else {
+            db.createPlaylist(name, tracks).then(() => {
                 showNotification(`Created playlist "${name}" with ${tracks.length} tracks`);
                 closeModal();
             });
         }
-    });
+    };
+
+    const cleanup = () => {
+        closeBtn.removeEventListener('click', closeModal);
+        overlay.removeEventListener('click', closeModal);
+        createBtn.removeEventListener('click', handleCreateClick);
+        listEl.removeEventListener('click', handleOptionClick);
+    };
+
+    closeBtn.addEventListener('click', closeModal);
+    overlay.addEventListener('click', closeModal);
+    createBtn.addEventListener('click', handleCreateClick);
+    listEl.addEventListener('click', handleOptionClick);
+
+    renderModal();
+    modal.classList.add('active');
+}
+
+async function refreshLikeUiForTrack(track, added, player, ui) {
+    const t = track.type || 'track';
+    const id = track.id;
+    if (ui && typeof ui.updateLikeState === 'function') {
+        const idStr = String(id);
+        for (const el of document.querySelectorAll(`[data-track-id="${idStr}"]`)) {
+            await ui.updateLikeState(el, t, id);
+        }
+        if (t === 'video') {
+            for (const el of document.querySelectorAll(`.card[data-video-id="${idStr}"]`)) {
+                await ui.updateLikeState(el, 'video', id);
+            }
+        }
+    }
+    if ((t === 'track' || t === 'video') && player?.currentTrack?.id == id) {
+        for (const btnId of ['now-playing-like-btn', 'fs-like-btn']) {
+            const btn = document.getElementById(btnId);
+            if (!btn) continue;
+            const heartIcon = btn.querySelector('svg');
+            if (heartIcon) {
+                heartIcon.classList.toggle('filled', added);
+                if (heartIcon.hasAttribute('fill')) {
+                    heartIcon.setAttribute('fill', added ? 'currentColor' : 'none');
+                }
+            }
+            btn.classList.toggle('active', added);
+            btn.title = added ? 'Remove from Favorites' : 'Add to Favorites';
+        }
+    }
 }
 
 export function initializePlayerEvents(player, audioPlayer, scrobbler, ui) {
@@ -317,45 +510,83 @@ export function initializePlayerEvents(player, audioPlayer, scrobbler, ui) {
 
     function updateSelectionBar() {
         let bar = document.getElementById('selection-bar');
+        const icon = (svgFn, size = 14) => (typeof svgFn === 'function' ? svgFn(size) : '');
         if (!bar) {
             bar = document.createElement('div');
             bar.id = 'selection-bar';
             bar.className = 'selection-bar';
             bar.innerHTML = `
-                <span class="selection-count">0 selected</span>
-                <div class="selection-actions">
-                    <button data-action="play-selected">Play</button>
-                    <button data-action="add-to-queue-selected">Add to queue</button>
-                    <button data-action="add-to-playlist-selected">Add to playlist</button>
-                    <button data-action="download-selected">Download</button>
-                    <button data-action="like-selected">Like</button>
+                <div class="bulk-selection-row">
+                    <span class="selection-count">0 songs selected</span>
+                    <button type="button" data-action="clear-selection" title="Clear selection">×</button>
                 </div>
-                <button data-action="clear-selection" style="margin-left: 8px;">Clear</button>
+                <div class="selection-actions selection-actions--primary">
+                    <button type="button" data-action="play-selected">${icon(SVG_PLAY)}<span>Play</span></button>
+                    <button type="button" data-action="add-to-queue-selected">${icon(SVG_LIST)}<span>Add to queue</span></button>
+                    <button type="button" data-action="like-selected">${icon(SVG_HEART)}<span>Like</span></button>
+                </div>
+                <div class="selection-actions selection-actions--secondary">
+                    <button type="button" data-action="add-to-playlist-selected">${icon(SVG_PLUS)}<span>Add to playlist</span></button>
+                    <button type="button" data-action="move-to-playlist-selected" hidden>${icon(SVG_SQUARE_PEN)}<span>Move to playlist</span></button>
+                    <button type="button" data-action="remove-from-playlist-selected" hidden>${icon(SVG_BIN)}<span>Remove from playlist</span></button>
+                    <button type="button" data-action="download-selected">${icon(SVG_DOWNLOAD)}<span>Download</span></button>
+                </div>
             `;
             document.body.appendChild(bar);
 
-            bar.querySelectorAll('button').forEach((btn) => {
+            bar.querySelectorAll('button[data-action]').forEach((btn) => {
                 btn.addEventListener('click', () => handleSelectionAction(btn.dataset.action));
             });
         }
 
+        const mainContent = document.querySelector('main.main-content');
+        const selectedTrackEls = Array.from(document.querySelectorAll('.track-item.selected'));
+        if (trackSelection.selectedIds.size === 0 && selectedTrackEls.length > 0) {
+            const selectedFromDom = selectedTrackEls
+                .map((el) => el.dataset.trackId)
+                .filter(Boolean);
+            if (selectedFromDom.length > 0) {
+                trackSelection.selectedIds = new Set(selectedFromDom);
+                trackSelection.isSelecting = true;
+                document.body.classList.add('multi-select-mode');
+            }
+        }
+
         const count = trackSelection.selectedIds.size;
-        bar.querySelector('.selection-count').textContent = `${count} selected`;
+        const label = count === 1 ? '1 song selected' : `${count} songs selected`;
+        bar.querySelector('.selection-count').textContent = label;
         bar.classList.toggle('visible', count > 0);
+        bar.style.display = count > 0 ? 'flex' : 'none';
+
+        const ctx = getMoveRemovePlaylistSelectionContext();
+        const showMoveRemovePlaylist = ctx.selectionOnUserPlaylistView || ctx.selectionOnLikedTracks;
+
+        const btnMove = bar.querySelector('[data-action="move-to-playlist-selected"]');
+        const btnRemove = bar.querySelector('[data-action="remove-from-playlist-selected"]');
+        if (btnMove) {
+            btnMove.hidden = !showMoveRemovePlaylist;
+        }
+        if (btnRemove) {
+            btnRemove.hidden = !showMoveRemovePlaylist;
+        }
     }
 
     function handleSelectionAction(action) {
+        if (action === 'clear-selection') {
+            clearSelection();
+            return;
+        }
+
         const selectedIds = getSelectedTracks();
         if (selectedIds.length === 0) return;
 
-        const mainContent = document.getElementById('main-content');
-        const selectedTracks = [];
-        mainContent.querySelectorAll('.track-item').forEach((item) => {
-            if (trackSelection.selectedIds.has(item.dataset.trackId)) {
-                const track = trackDataStore.get(item);
-                if (track) selectedTracks.push(track);
-            }
-        });
+        const mainContent = document.querySelector('main.main-content');
+        if (!mainContent) return;
+
+        const selectedTracks = buildUniqueSelectedTrackList(mainContent);
+
+        const api = MusicAPI.instance;
+        const lm = ui?.lyricsManager;
 
         switch (action) {
             case 'play-selected':
@@ -369,7 +600,7 @@ export function initializePlayerEvents(player, audioPlayer, scrobbler, ui) {
                 if (selectedTracks.length > 0) {
                     player.addToQueue(selectedTracks);
                     if (window.renderQueueFunction) window.renderQueueFunction();
-                    showNotification(`Added ${selectedTracks.length} tracks to queue`);
+                    showNotification(`Added ${selectedTracks.length} song${selectedTracks.length === 1 ? '' : 's'} to queue`);
                 }
                 break;
             case 'add-to-playlist-selected':
@@ -377,26 +608,117 @@ export function initializePlayerEvents(player, audioPlayer, scrobbler, ui) {
                     showMultiSelectPlaylistModal(selectedTracks);
                 }
                 break;
+            case 'move-to-playlist-selected': {
+                if (!selectedTracks.length) break;
+                const ctx = getMoveRemovePlaylistSelectionContext();
+                if (ctx.selectionOnUserPlaylistView && ctx.userPlaylistIdMatch) {
+                    showMultiSelectPlaylistModal(selectedTracks, {
+                        mode: 'move',
+                        sourcePlaylistId: ctx.userPlaylistIdMatch[1],
+                        ui,
+                    });
+                    break;
+                }
+                if (ctx.selectionOnLikedTracks) {
+                    showMultiSelectPlaylistModal(selectedTracks, { mode: 'move', sourceFromLikes: true, ui });
+                    break;
+                }
+                showNotification('Select tracks from your playlist or from Liked tracks to move.');
+                break;
+            }
+            case 'remove-from-playlist-selected': {
+                if (!selectedTracks.length || !ui) break;
+                const ctx = getMoveRemovePlaylistSelectionContext();
+                if (ctx.selectionOnUserPlaylistView && ctx.userPlaylistIdMatch) {
+                    const playlistId = ctx.userPlaylistIdMatch[1];
+                    (async () => {
+                        for (const track of selectedTracks) {
+                            await db.removeTrackFromPlaylist(playlistId, track.id, track.type || 'track');
+                        }
+                        syncManager.syncUserPlaylist(await db.getPlaylist(playlistId), 'update');
+                        const mainEl = document.querySelector('.main-content');
+                        const scrollTop = mainEl?.scrollTop;
+                        await ui.renderPlaylistPage(playlistId, 'user');
+                        if (mainEl && scrollTop != null) mainEl.scrollTop = scrollTop;
+                        clearSelection();
+                        showNotification(
+                            `Removed ${selectedTracks.length} song${selectedTracks.length === 1 ? '' : 's'} from playlist`
+                        );
+                    })();
+                    break;
+                }
+                if (ctx.selectionOnLikedTracks) {
+                    void (async () => {
+                        for (const track of selectedTracks) {
+                            const t = track.type || 'track';
+                            if (await db.isFavorite(t, track.id)) {
+                                const added = await db.toggleFavorite(t, track);
+                                syncManager.syncLibraryItem(t, track, added);
+                                await refreshLikeUiForTrack(track, added, player, ui);
+                            }
+                        }
+                        await ui.renderLibraryPage();
+                        clearSelection();
+                        showNotification(
+                            `Removed ${selectedTracks.length} song${selectedTracks.length === 1 ? '' : 's'} from liked`
+                        );
+                    })();
+                    break;
+                }
+                showNotification('Select tracks from your playlist or from Liked tracks to remove.');
+                break;
+            }
             case 'download-selected':
                 if (selectedTracks.length > 0) {
                     selectedTracks.forEach((track) => {
-                        downloadTrackWithMetadata(track, downloadQualitySettings.getQuality(), api, lyricsManager);
+                        downloadTrackWithMetadata(track, downloadQualitySettings.getQuality(), api, lm);
                     });
-                    showNotification(`Downloading ${selectedTracks.length} tracks`);
+                    showNotification(`Downloading ${selectedTracks.length} song${selectedTracks.length === 1 ? '' : 's'}`);
                 }
                 break;
-            case 'like-selected':
-                selectedTracks.forEach(async (track) => {
-                    const added = await db.toggleFavorite('track', track);
-                    syncManager.syncLibraryItem('track', track, added);
-                });
-                showNotification(`Liked ${selectedTracks.length} tracks`);
+            case 'like-selected': {
+                void (async () => {
+                    const results = await Promise.all(
+                        selectedTracks.map(async (track) => {
+                            const t = track.type || 'track';
+                            const added = await db.toggleFavorite(t, track);
+                            syncManager.syncLibraryItem(t, track, added);
+                            return { track, added, t };
+                        })
+                    );
+                    for (const { track, added } of results) {
+                        await refreshLikeUiForTrack(track, added, player, ui);
+                    }
+                    showNotification(
+                        `Updated likes for ${results.length} song${results.length === 1 ? '' : 's'}`
+                    );
+                })();
                 break;
-            case 'clear-selection':
-                clearSelection();
-                break;
+            }
         }
     }
+
+    document.addEventListener('track-selection-changed', () => updateSelectionBar());
+    document.addEventListener('app-route-rendered', () => updateSelectionBar());
+    document.addEventListener('bulk-selection-clear', () => clearSelection());
+    document.addEventListener('track-selection-open', (e) => {
+        const track = e.detail?.track;
+        if (track) {
+            const id = String(track.id);
+            if (!trackSelection.selectedIds.has(id)) {
+                trackSelection.selectedIds.add(id);
+                document.querySelectorAll(`.track-item[data-track-id="${id}"]`).forEach((el) => {
+                    el.classList.add('selected');
+                    updateCheckbox(el.querySelector('.track-checkbox'), true);
+                });
+                trackSelection.lastClickedId = id;
+            }
+            trackSelection.isSelecting = trackSelection.selectedIds.size > 0;
+            document.body.classList.toggle('multi-select-mode', trackSelection.isSelecting);
+        }
+        updateSelectionBar();
+    });
+    updateSelectionBar();
 
     if (homeStartRadioBtn) {
         homeStartRadioBtn.addEventListener('click', async () => {
@@ -1010,8 +1332,12 @@ function initializeSmoothSliders(player) {
 export async function showAddToPlaylistModal(track) {
     const modal = document.getElementById('playlist-select-modal');
     const list = document.getElementById('playlist-select-list');
-    const cancelBtn = document.getElementById('playlist-select-cancel');
+    const closeBtn = document.getElementById('playlist-select-close');
+    const createBtn = document.getElementById('playlist-select-create');
     const overlay = modal.querySelector('.modal-overlay');
+    const titleEl = document.getElementById('playlist-select-title');
+    const api = MusicAPI.instance;
+    titleEl.textContent = 'Add to Playlist';
 
     const renderModal = async () => {
         const playlists = await db.getPlaylists(true);
@@ -1025,27 +1351,34 @@ export async function showAddToPlaylistModal(track) {
             }
         }
 
-        list.innerHTML =
-            `
-            <div class="modal-option create-new-option" style="border-bottom: 1px solid var(--border); margin-bottom: 0.5rem;">
-                <span style="font-weight: 600; color: var(--primary);">+ Create New Playlist</span>
+        const getPlaylistCoverUrl = (playlist) => {
+            const fallbackCover = 'assets/appicon.png';
+            const coverCandidate =
+                playlist?.cover ||
+                playlist?.image ||
+                (Array.isArray(playlist?.images) && playlist.images.length > 0 ? playlist.images[0] : null) ||
+                playlist?.tracks?.find((t) => t?.album?.cover)?.album?.cover ||
+                fallbackCover;
+            if (coverCandidate.startsWith('http') || coverCandidate.startsWith('data:') || coverCandidate.startsWith('/')) {
+                return coverCandidate;
+            }
+            return api.getCoverUrl(coverCandidate);
+        };
+
+        list.innerHTML = playlists
+            .map((p) => {
+                const alreadyContains = playlistsWithTrack.has(p.id);
+                return `
+            <div class="modal-option playlist-select-item ${alreadyContains ? 'already-contains' : ''}" data-id="${p.id}">
+                <img src="${getPlaylistCoverUrl(p)}" alt="${escapeHtml(p.name)} cover" class="playlist-select-cover" loading="lazy">
+                <span class="playlist-select-meta">
+                    <span class="playlist-select-name">${escapeHtml(p.name)}</span>
+                    <span class="playlist-select-count">${p.tracks?.length || 0} tracks</span>
+                </span>
             </div>
-        ` +
-            playlists
-                .map((p) => {
-                    const alreadyContains = playlistsWithTrack.has(p.id);
-                    return `
-                <div class="modal-option ${alreadyContains ? 'already-contains' : ''}" data-id="${p.id}">
-                    <span>${p.name}</span>
-                    ${
-                        alreadyContains
-                            ? `<button class="remove-from-playlist-btn-modal" title="Remove from playlist" style="background: transparent; border: none; color: inherit; cursor: pointer; padding: 4px; display: flex; align-items: center;">${SVG_BIN(20)}</button>`
-                            : ''
-                    }
-                </div>
-            `;
-                })
-                .join('');
+        `;
+            })
+            .join('');
         return true;
     };
 
@@ -1057,72 +1390,59 @@ export async function showAddToPlaylistModal(track) {
     };
 
     const handleOptionClick = async (e) => {
-        const removeBtn = e.target.closest('.remove-from-playlist-btn-modal');
         const option = e.target.closest('.modal-option');
 
         if (!option) return;
 
-        if (option.classList.contains('create-new-option')) {
-            closeModal();
-            const createModal = document.getElementById('playlist-modal');
-            document.getElementById('playlist-modal-title').textContent = 'Create Playlist';
-            document.getElementById('playlist-name-input').value = '';
-            document.getElementById('playlist-cover-input').value = '';
-            document.getElementById('playlist-cover-file-input').value = '';
-            document.getElementById('playlist-description-input').value = '';
-            createModal.dataset.editingId = '';
-            document.getElementById('import-section').style.display = 'none';
-
-            // Reset cover upload state
-            const coverUploadBtn = document.getElementById('playlist-cover-upload-btn');
-            const coverUrlInput = document.getElementById('playlist-cover-input');
-            const coverToggleUrlBtn = document.getElementById('playlist-cover-toggle-url-btn');
-            if (coverUploadBtn) {
-                coverUploadBtn.style.flex = '1';
-                coverUploadBtn.style.display = 'flex';
-            }
-            if (coverUrlInput) coverUrlInput.style.display = 'none';
-            if (coverToggleUrlBtn) {
-                coverToggleUrlBtn.textContent = 'or URL';
-                coverToggleUrlBtn.title = 'Switch to URL input';
-            }
-
-            // Pass track
-            createModal._pendingTracks = [track];
-
-            createModal.classList.add('active');
-            document.getElementById('playlist-name-input').focus();
-            return;
-        }
-
         const playlistId = option.dataset.id;
+        if (option.classList.contains('already-contains')) return;
 
-        if (removeBtn) {
-            e.stopPropagation();
-            await db.removeTrackFromPlaylist(playlistId, track.id);
-            const updatedPlaylist = await db.getPlaylist(playlistId);
-            syncManager.syncUserPlaylist(updatedPlaylist, 'update');
-            showNotification(`Removed from playlist: ${option.querySelector('span').textContent}`);
-            await renderModal();
-        } else {
-            if (option.classList.contains('already-contains')) return;
-
-            await db.addTrackToPlaylist(playlistId, track);
-            const updatedPlaylist = await db.getPlaylist(playlistId);
-            syncManager.syncUserPlaylist(updatedPlaylist, 'update');
-            showNotification(`Added to playlist: ${option.querySelector('span').textContent}`);
-            closeModal();
-        }
+        await db.addTrackToPlaylist(playlistId, track);
+        const updatedPlaylist = await db.getPlaylist(playlistId);
+        syncManager.syncUserPlaylist(updatedPlaylist, 'update');
+        showNotification(`Added to playlist: ${option.querySelector('.playlist-select-name').textContent}`);
+        closeModal();
     };
 
     const cleanup = () => {
-        cancelBtn.removeEventListener('click', closeModal);
+        closeBtn.removeEventListener('click', closeModal);
         overlay.removeEventListener('click', closeModal);
+        createBtn.removeEventListener('click', handleCreateClick);
         list.removeEventListener('click', handleOptionClick);
     };
 
-    cancelBtn.addEventListener('click', closeModal);
+    const handleCreateClick = () => {
+        closeModal();
+        const createModal = document.getElementById('playlist-modal');
+        document.getElementById('playlist-modal-title').textContent = 'Create Playlist';
+        document.getElementById('playlist-name-input').value = '';
+        document.getElementById('playlist-cover-input').value = '';
+        document.getElementById('playlist-cover-file-input').value = '';
+        document.getElementById('playlist-description-input').value = '';
+        createModal.dataset.editingId = '';
+        document.getElementById('import-section').style.display = 'none';
+
+        const coverUploadBtn = document.getElementById('playlist-cover-upload-btn');
+        const coverUrlInput = document.getElementById('playlist-cover-input');
+        const coverToggleUrlBtn = document.getElementById('playlist-cover-toggle-url-btn');
+        if (coverUploadBtn) {
+            coverUploadBtn.style.flex = '1';
+            coverUploadBtn.style.display = 'flex';
+        }
+        if (coverUrlInput) coverUrlInput.style.display = 'none';
+        if (coverToggleUrlBtn) {
+            coverToggleUrlBtn.textContent = 'or URL';
+            coverToggleUrlBtn.title = 'Switch to URL input';
+        }
+
+        createModal._pendingTracks = [track];
+        createModal.classList.add('active');
+        document.getElementById('playlist-name-input').focus();
+    };
+
+    closeBtn.addEventListener('click', closeModal);
     overlay.addEventListener('click', closeModal);
+    createBtn.addEventListener('click', handleCreateClick);
     list.addEventListener('click', handleOptionClick);
 
     modal.classList.add('active');
@@ -1140,6 +1460,11 @@ export async function handleTrackAction(
     extraData = null
 ) {
     if (!item) return;
+
+    if (action === 'open-bulk-selection') {
+        document.dispatchEvent(new CustomEvent('track-selection-open', { detail: { track: item } }));
+        return;
+    }
 
     // Actions not allowed for unavailable tracks
     const forbiddenForUnavailable = [
@@ -1342,6 +1667,23 @@ export async function handleTrackAction(
         if (window.renderQueueFunction) window.renderQueueFunction();
         showNotification(`Playing next: ${item.title}`);
     } else if (action === 'play-card') {
+        const isLibraryFavoritesTrack = type === 'track' && window.location.pathname === '/library';
+        if (isLibraryFavoritesTrack) {
+            const tracksContainer = document.getElementById('library-tracks-container');
+            const trackCards = tracksContainer
+                ? Array.from(tracksContainer.querySelectorAll('.card[data-track-id]'))
+                : [];
+            const likedTrackList = trackCards.map((el) => trackDataStore.get(el)).filter(Boolean);
+            if (likedTrackList.length > 0) {
+                const startIndex = likedTrackList.findIndex((track) => track.id == item.id);
+                const playIndex = startIndex >= 0 ? startIndex : 0;
+                player.setQueue(likedTrackList, playIndex);
+                document.getElementById('shuffle-btn')?.classList.remove('active');
+                player.playTrackFromQueue();
+                return;
+            }
+        }
+
         player.setQueue([item], 0);
         player.playAtIndex(0);
         showNotification(`Playing track: ${item.title}`);
@@ -1355,6 +1697,21 @@ export async function handleTrackAction(
     } else if (action === 'download') {
         trackDownloadTrack(item, downloadQualitySettings.getQuality());
         await downloadTrackWithMetadata(item, downloadQualitySettings.getQuality(), api, lyricsManager);
+    } else if (action === 'remove-from-playlist') {
+        if (item.isLocal) return;
+        const path = window.location.pathname;
+        const m = path.match(/^\/userplaylist\/([^/]+)/);
+        if (!m || !ui) return;
+        const playlistId = m[1];
+        const trackType = item.type || 'track';
+        const updatedPlaylist = await db.removeTrackFromPlaylist(playlistId, item.id, trackType);
+        syncManager.syncUserPlaylist(updatedPlaylist, 'update');
+        const mainEl = document.querySelector('.main-content');
+        const scrollTop = mainEl?.scrollTop;
+        await ui.renderPlaylistPage(playlistId, 'user');
+        if (mainEl && scrollTop != null) mainEl.scrollTop = scrollTop;
+        showNotification(`Removed from playlist: ${item.title}`);
+        return;
     } else if (action === 'toggle-like') {
         const added = await db.toggleFavorite(type, item);
         syncManager.syncLibraryItem(type, item, added);
@@ -1517,13 +1874,14 @@ export async function handleTrackAction(
     } else if (action === 'add-to-playlist') {
         const modal = document.getElementById('playlist-select-modal');
         const list = document.getElementById('playlist-select-list');
-        const cancelBtn = document.getElementById('playlist-select-cancel');
+        const closeBtn = document.getElementById('playlist-select-close');
+        const createBtn = document.getElementById('playlist-select-create');
         const overlay = modal.querySelector('.modal-overlay');
+        const titleEl = document.getElementById('playlist-select-title');
+        titleEl.textContent = 'Add to Playlist';
 
         const renderModal = async () => {
             const playlists = await db.getPlaylists(true);
-            // Removed empty check to allow creating new playlist
-
             const trackId = item.id;
             const trackType = item.type || 'track';
             const playlistsWithTrack = new Set();
@@ -1537,27 +1895,34 @@ export async function handleTrackAction(
                 }
             }
 
-            list.innerHTML =
-                `
-                <div class="modal-option create-new-option" style="border-bottom: 1px solid var(--border); margin-bottom: 0.5rem;">
-                    <span style="font-weight: 600; color: var(--primary);">+ Create New Playlist</span>
+            const getPlaylistCoverUrl = (playlist) => {
+                const fallbackCover = 'assets/appicon.png';
+                const coverCandidate =
+                    playlist?.cover ||
+                    playlist?.image ||
+                    (Array.isArray(playlist?.images) && playlist.images.length > 0 ? playlist.images[0] : null) ||
+                    playlist?.tracks?.find((t) => t?.album?.cover)?.album?.cover ||
+                    fallbackCover;
+                if (coverCandidate.startsWith('http') || coverCandidate.startsWith('data:') || coverCandidate.startsWith('/')) {
+                    return coverCandidate;
+                }
+                return api.getCoverUrl(coverCandidate);
+            };
+
+            list.innerHTML = playlists
+                .map((p) => {
+                    const alreadyContains = playlistsWithTrack.has(p.id);
+                    return `
+                <div class="modal-option playlist-select-item ${alreadyContains ? 'already-contains' : ''}" data-id="${p.id}">
+                    <img src="${getPlaylistCoverUrl(p)}" alt="${escapeHtml(p.name)} cover" class="playlist-select-cover" loading="lazy">
+                    <span class="playlist-select-meta">
+                        <span class="playlist-select-name">${escapeHtml(p.name)}</span>
+                        <span class="playlist-select-count">${p.tracks?.length || 0} tracks</span>
+                    </span>
                 </div>
-            ` +
-                playlists
-                    .map((p) => {
-                        const alreadyContains = playlistsWithTrack.has(p.id);
-                        return `
-                    <div class="modal-option ${alreadyContains ? 'already-contains' : ''}" data-id="${p.id}">
-                        <span>${p.name}</span>
-                        ${
-                            alreadyContains
-                                ? `<button class="remove-from-playlist-btn-modal" title="Remove from playlist" style="background: transparent; border: none; color: inherit; cursor: pointer; padding: 4px; display: flex; align-items: center;">${SVG_BIN(20)}</button>`
-                                : ''
-                        }
-                    </div>
-                `;
-                    })
-                    .join('');
+            `;
+                })
+                .join('');
             return true;
         };
 
@@ -1569,72 +1934,59 @@ export async function handleTrackAction(
         };
 
         const handleOptionClick = async (e) => {
-            const removeBtn = e.target.closest('.remove-from-playlist-btn-modal');
             const option = e.target.closest('.modal-option');
 
             if (!option) return;
 
-            if (option.classList.contains('create-new-option')) {
-                closeModal();
-                const createModal = document.getElementById('playlist-modal');
-                document.getElementById('playlist-modal-title').textContent = 'Create Playlist';
-                document.getElementById('playlist-name-input').value = '';
-                document.getElementById('playlist-cover-input').value = '';
-                document.getElementById('playlist-cover-file-input').value = '';
-                document.getElementById('playlist-description-input').value = '';
-                createModal.dataset.editingId = '';
-                document.getElementById('import-section').style.display = 'none';
-
-                // Reset cover upload state
-                const coverUploadBtn = document.getElementById('playlist-cover-upload-btn');
-                const coverUrlInput = document.getElementById('playlist-cover-input');
-                const coverToggleUrlBtn = document.getElementById('playlist-cover-toggle-url-btn');
-                if (coverUploadBtn) {
-                    coverUploadBtn.style.flex = '1';
-                    coverUploadBtn.style.display = 'flex';
-                }
-                if (coverUrlInput) coverUrlInput.style.display = 'none';
-                if (coverToggleUrlBtn) {
-                    coverToggleUrlBtn.textContent = 'or URL';
-                    coverToggleUrlBtn.title = 'Switch to URL input';
-                }
-
-                // Pass track
-                createModal._pendingTracks = [item];
-
-                createModal.classList.add('active');
-                document.getElementById('playlist-name-input').focus();
-                return;
-            }
-
             const playlistId = option.dataset.id;
+            if (option.classList.contains('already-contains')) return;
 
-            if (removeBtn) {
-                e.stopPropagation();
-                await db.removeTrackFromPlaylist(playlistId, item.id);
-                const updatedPlaylist = await db.getPlaylist(playlistId);
-                syncManager.syncUserPlaylist(updatedPlaylist, 'update');
-                showNotification(`Removed from playlist: ${option.querySelector('span').textContent}`);
-                await renderModal();
-            } else {
-                if (option.classList.contains('already-contains')) return;
-
-                await db.addTrackToPlaylist(playlistId, item);
-                const updatedPlaylist = await db.getPlaylist(playlistId);
-                syncManager.syncUserPlaylist(updatedPlaylist, 'update');
-                showNotification(`Added to playlist: ${option.querySelector('span').textContent}`);
-                closeModal();
-            }
+            await db.addTrackToPlaylist(playlistId, item);
+            const updatedPlaylist = await db.getPlaylist(playlistId);
+            syncManager.syncUserPlaylist(updatedPlaylist, 'update');
+            showNotification(`Added to playlist: ${option.querySelector('.playlist-select-name').textContent}`);
+            closeModal();
         };
 
         const cleanup = () => {
-            cancelBtn.removeEventListener('click', closeModal);
+            closeBtn.removeEventListener('click', closeModal);
             overlay.removeEventListener('click', closeModal);
+            createBtn.removeEventListener('click', handleCreateClick);
             list.removeEventListener('click', handleOptionClick);
         };
 
-        cancelBtn.addEventListener('click', closeModal);
+        const handleCreateClick = () => {
+            closeModal();
+            const createModal = document.getElementById('playlist-modal');
+            document.getElementById('playlist-modal-title').textContent = 'Create Playlist';
+            document.getElementById('playlist-name-input').value = '';
+            document.getElementById('playlist-cover-input').value = '';
+            document.getElementById('playlist-cover-file-input').value = '';
+            document.getElementById('playlist-description-input').value = '';
+            createModal.dataset.editingId = '';
+            document.getElementById('import-section').style.display = 'none';
+
+            const coverUploadBtn = document.getElementById('playlist-cover-upload-btn');
+            const coverUrlInput = document.getElementById('playlist-cover-input');
+            const coverToggleUrlBtn = document.getElementById('playlist-cover-toggle-url-btn');
+            if (coverUploadBtn) {
+                coverUploadBtn.style.flex = '1';
+                coverUploadBtn.style.display = 'flex';
+            }
+            if (coverUrlInput) coverUrlInput.style.display = 'none';
+            if (coverToggleUrlBtn) {
+                coverToggleUrlBtn.textContent = 'or URL';
+                coverToggleUrlBtn.title = 'Switch to URL input';
+            }
+
+            createModal._pendingTracks = [item];
+            createModal.classList.add('active');
+            document.getElementById('playlist-name-input').focus();
+        };
+
+        closeBtn.addEventListener('click', closeModal);
         overlay.addEventListener('click', closeModal);
+        createBtn.addEventListener('click', handleCreateClick);
         list.addEventListener('click', handleOptionClick);
 
         modal.classList.add('active');
@@ -1981,6 +2333,22 @@ async function updateContextMenuLikeState(contextMenu, contextTrack) {
         }
     });
 
+    const removeFromPlaylistItem = contextMenu.querySelector('li[data-action="remove-from-playlist"]');
+    if (removeFromPlaylistItem) {
+        const path = window.location.pathname;
+        const onUserPlaylist = /^\/userplaylist\/[^/]+/.test(path);
+        const trackEl = contextMenu._contextTrackItem;
+        const playlistPage = document.getElementById('page-playlist');
+        const inPlaylistPageTracks =
+            trackEl &&
+            playlistPage &&
+            playlistPage.classList.contains('active') &&
+            playlistPage.contains(trackEl);
+        const multi = (contextMenu._selectedTracks || []).length > 1;
+        removeFromPlaylistItem.style.display =
+            onUserPlaylist && inPlaylistPageTracks && !multi ? 'block' : 'none';
+    }
+
     // Handle multiple artists for "Go to artist"
     const artistItem = contextMenu.querySelector('li[data-action="go-to-artist"]');
     if (artistItem) {
@@ -2083,6 +2451,7 @@ export function initializeTrackInteractions(player, api, mainContent, contextMen
             contextTrack = item;
             contextMenu._contextTrack = item;
             contextMenu._contextType = type;
+            contextMenu._contextTrackItem = null;
 
             await updateContextMenuLikeState(contextMenu, item);
             const rect = cardMenuBtn.getBoundingClientRect();
@@ -2122,13 +2491,9 @@ export function initializeTrackInteractions(player, api, mainContent, contextMen
                     }
                     contextMenu._contextTrack = contextTrack;
                     contextMenu._contextType = menuBtn.dataset.type || trackItem.dataset.type || 'track';
+                    contextMenu._contextTrackItem = trackItem;
                     if (trackSelection.isSelecting && trackSelection.selectedIds.size > 0) {
-                        const selectedTracks = [];
-                        document.querySelectorAll('.track-item.selected').forEach((item) => {
-                            const track = trackDataStore.get(item);
-                            if (track) selectedTracks.push(track);
-                        });
-                        contextMenu._selectedTracks = selectedTracks;
+                        contextMenu._selectedTracks = uniqueTracksFromSelectedTrackItems();
                     }
                     await updateContextMenuLikeState(contextMenu, contextTrack);
                     const rect = menuBtn.getBoundingClientRect();
@@ -2312,10 +2677,7 @@ export function initializeTrackInteractions(player, api, mainContent, contextMen
                 // Store selected tracks for multi-select actions
                 let selectedTracks = [];
                 if (trackSelection.isSelecting && trackSelection.selectedIds.size > 0) {
-                    document.querySelectorAll('.track-item.selected').forEach((item) => {
-                        const track = trackDataStore.get(item);
-                        if (track) selectedTracks.push(track);
-                    });
+                    selectedTracks = uniqueTracksFromSelectedTrackItems();
                 }
 
                 // Hide actions for unavailable tracks
@@ -2329,6 +2691,7 @@ export function initializeTrackInteractions(player, api, mainContent, contextMen
                 contextMenu._contextTrack = contextTrack;
                 contextMenu._contextType = contextTrack.type || 'track';
                 contextMenu._selectedTracks = selectedTracks;
+                contextMenu._contextTrackItem = trackItem;
                 await updateContextMenuLikeState(contextMenu, contextTrack);
                 positionMenu(contextMenu, e.clientX, e.clientY);
             }
@@ -2360,6 +2723,7 @@ export function initializeTrackInteractions(player, api, mainContent, contextMen
             contextMenu._contextTrack = item;
             contextMenu._contextType = type.replace('userplaylist', 'user-playlist');
             contextMenu._contextHref = card.dataset.href;
+            contextMenu._contextTrackItem = null;
 
             await updateContextMenuLikeState(contextMenu, item);
             positionMenu(contextMenu, e.clientX, e.clientY);
@@ -2374,6 +2738,7 @@ export function initializeTrackInteractions(player, api, mainContent, contextMen
             contextMenu.style.display = 'none';
             contextMenu._contextType = null;
             contextMenu._originalHTML = null;
+            contextMenu._contextTrackItem = null;
         }
 
         if (
@@ -2452,14 +2817,22 @@ export function initializeTrackInteractions(player, api, mainContent, contextMen
                         showNotification(`Added ${selectedTracks.length} tracks to queue`);
                         clearSelection();
                         break;
-                    case 'toggle-like':
-                        selectedTracks.forEach(async (t) => {
-                            const added = await db.toggleFavorite('track', t);
-                            syncManager.syncLibraryItem('track', t, added);
-                        });
-                        showNotification(`Liked ${selectedTracks.length} tracks`);
+                    case 'toggle-like': {
+                        const results = await Promise.all(
+                            selectedTracks.map(async (tr) => {
+                                const typ = tr.type || 'track';
+                                const added = await db.toggleFavorite(typ, tr);
+                                syncManager.syncLibraryItem(typ, tr, added);
+                                return { track: tr, added };
+                            })
+                        );
+                        for (const { track, added } of results) {
+                            await refreshLikeUiForTrack(track, added, player, ui);
+                        }
+                        showNotification(`Updated likes for ${results.length} tracks`);
                         clearSelection();
                         break;
+                    }
                     case 'add-to-playlist':
                         showMultiSelectPlaylistModal(selectedTracks);
                         clearSelection();
@@ -2490,6 +2863,7 @@ export function initializeTrackInteractions(player, api, mainContent, contextMen
         contextMenu.style.display = 'none';
         contextMenu._contextType = null;
         contextMenu._selectedTracks = null;
+        contextMenu._contextTrackItem = null;
     });
 
     // Now playing bar interactions

@@ -2216,26 +2216,40 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 const modal = document.getElementById('playlist-select-modal');
                 const list = document.getElementById('playlist-select-list');
-                const cancelBtn = document.getElementById('playlist-select-cancel');
+                const closeBtn = document.getElementById('playlist-select-close');
+                const createBtn = document.getElementById('playlist-select-create');
                 const overlay = modal.querySelector('.modal-overlay');
+                const titleEl = document.getElementById('playlist-select-title');
+                titleEl.textContent = 'Add to Playlist';
 
                 const playlists = await db.getPlaylists(false);
+                const getPlaylistCoverUrl = (playlist) => {
+                    const fallbackCover = 'assets/appicon.png';
+                    const coverCandidate =
+                        playlist?.cover ||
+                        playlist?.image ||
+                        (Array.isArray(playlist?.images) && playlist.images.length > 0 ? playlist.images[0] : null) ||
+                        playlist?.tracks?.find((t) => t?.album?.cover)?.album?.cover ||
+                        fallbackCover;
+                    if (coverCandidate.startsWith('http') || coverCandidate.startsWith('data:') || coverCandidate.startsWith('/')) {
+                        return coverCandidate;
+                    }
+                    return MusicAPI.instance.getCoverUrl(coverCandidate);
+                };
 
-                list.innerHTML =
-                    `
-                    <div class="modal-option create-new-option" style="border-bottom: 1px solid var(--border); margin-bottom: 0.5rem;">
-                        <span style="font-weight: 600; color: var(--primary);">+ Create New Playlist</span>
-                    </div>
-                ` +
-                    playlists
-                        .map(
-                            (p) => `
-                    <div class="modal-option" data-id="${p.id}">
-                        <span>${p.name}</span>
+                list.innerHTML = playlists
+                    .map(
+                        (p) => `
+                    <div class="modal-option playlist-select-item" data-id="${p.id}">
+                        <img src="${getPlaylistCoverUrl(p)}" alt="${escapeHtml(p.name)} cover" class="playlist-select-cover" loading="lazy">
+                        <span class="playlist-select-meta">
+                            <span class="playlist-select-name">${escapeHtml(p.name)}</span>
+                            <span class="playlist-select-count">${p.tracks?.length || 0} tracks</span>
+                        </span>
                     </div>
                 `
-                        )
-                        .join('');
+                    )
+                    .join('');
 
                 const closeModal = () => {
                     modal.classList.remove('active');
@@ -2245,23 +2259,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const handleOptionClick = async (e) => {
                     const option = e.target.closest('.modal-option');
                     if (!option) return;
-
-                    if (option.classList.contains('create-new-option')) {
-                        closeModal();
-                        const createModal = document.getElementById('playlist-modal');
-                        document.getElementById('playlist-modal-title').textContent = 'Create Playlist';
-                        document.getElementById('playlist-name-input').value = '';
-                        document.getElementById('playlist-cover-input').value = '';
-                        createModal.dataset.editingId = '';
-                        document.getElementById('import-section').style.display = 'none'; // Hide import for simple add
-
-                        // Pass tracks
-                        createModal._pendingTracks = tracks;
-
-                        createModal.classList.add('active');
-                        document.getElementById('playlist-name-input').focus();
-                        return;
-                    }
 
                     const playlistId = option.dataset.id;
 
@@ -2280,13 +2277,28 @@ document.addEventListener('DOMContentLoaded', async () => {
                 };
 
                 const cleanup = () => {
-                    cancelBtn.removeEventListener('click', closeModal);
+                    closeBtn.removeEventListener('click', closeModal);
                     overlay.removeEventListener('click', closeModal);
+                    createBtn.removeEventListener('click', handleCreateClick);
                     list.removeEventListener('click', handleOptionClick);
                 };
 
-                cancelBtn.addEventListener('click', closeModal);
+                const handleCreateClick = () => {
+                    closeModal();
+                    const createModal = document.getElementById('playlist-modal');
+                    document.getElementById('playlist-modal-title').textContent = 'Create Playlist';
+                    document.getElementById('playlist-name-input').value = '';
+                    document.getElementById('playlist-cover-input').value = '';
+                    createModal.dataset.editingId = '';
+                    document.getElementById('import-section').style.display = 'none';
+                    createModal._pendingTracks = tracks;
+                    createModal.classList.add('active');
+                    document.getElementById('playlist-name-input').focus();
+                };
+
+                closeBtn.addEventListener('click', closeModal);
                 overlay.addEventListener('click', closeModal);
+                createBtn.addEventListener('click', handleCreateClick);
                 list.addEventListener('click', handleOptionClick);
 
                 modal.classList.add('active');
@@ -2618,6 +2630,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         await router();
         updateTabTitle(Player.instance);
+        document.dispatchEvent(new CustomEvent('app-route-rendered'));
     };
 
     await handleRouteChange();

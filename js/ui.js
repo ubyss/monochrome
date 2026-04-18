@@ -72,7 +72,7 @@ import {
     SVG_REPEAT_ONE,
     SVG_PLAY_LARGE,
     SVG_PAUSE_LARGE,
-    SVG_MINUS,
+    SVG_PLUS,
     SVG_SQUARE_PEN,
     SVG_SHARE,
     SVG_SHUFFLE,
@@ -434,6 +434,7 @@ export class UIRenderer {
             : '';
         const trackNumberHTML = `<div class="track-number">${showCover ? trackImageHTML : displayIndex}</div>`;
         const checkboxHTML = `<div class="track-checkbox" data-action="toggle-select">${SVG_CHECKBOX(18)}</div>`;
+        const thumbHTML = `<div class="track-item-thumb">${trackNumberHTML}${checkboxHTML}</div>`;
         const explicitBadge = hasExplicitContent(track) ? this.createExplicitBadge() : '';
         const qualityBadge = createQualityBadgeHTML(track);
         const trackTitle = getTrackTitle(track);
@@ -485,8 +486,7 @@ export class UIRenderer {
                  ${track.isLocal ? 'data-is-local="true"' : ''}
                  ${isUnavailable ? 'title="This track is currently unavailable"' : ''}
                  ${blockedTitle}>
-                ${checkboxHTML}
-                ${trackNumberHTML}
+                ${thumbHTML}
                 <div class="track-item-info">
                     <div class="track-item-details">
                         <div class="title">
@@ -3436,16 +3436,25 @@ export class UIRenderer {
             recommendedTracks = contentBlockingSettings.filterTracks(recommendedTracks);
 
             if (recommendedTracks.length > 0) {
-                this.renderListWithTracks(recommendedContainer, recommendedTracks, true, false, false, true);
+                this.renderListWithTracks(recommendedContainer, recommendedTracks, true, false, false, false);
 
                 const trackItems = recommendedContainer.querySelectorAll('.track-item');
                 trackItems.forEach((item) => {
                     const actionsDiv = item.querySelector('.track-item-actions');
                     if (actionsDiv) {
+                        const trackData = trackDataStore.get(item);
+                        const likeBtn = document.createElement('button');
+                        likeBtn.type = 'button';
+                        likeBtn.className = 'like-btn track-row-like-btn';
+                        likeBtn.dataset.action = 'toggle-like';
+                        likeBtn.dataset.type = trackData?.type === 'video' ? 'video' : 'track';
+                        likeBtn.title = 'Add to Liked';
+                        likeBtn.innerHTML = this.createHeartIcon(false);
+
                         const addToPlaylistBtn = document.createElement('button');
                         addToPlaylistBtn.className = 'track-action-btn add-to-playlist-btn';
                         addToPlaylistBtn.title = 'Add to this playlist';
-                        addToPlaylistBtn.innerHTML = SVG_MINUS(20);
+                        addToPlaylistBtn.innerHTML = SVG_PLUS(20);
                         addToPlaylistBtn.onclick = async (e) => {
                             e.stopPropagation();
                             const trackData = trackDataStore.get(item);
@@ -3499,9 +3508,15 @@ export class UIRenderer {
 
                         const menuBtn = actionsDiv.querySelector('.track-menu-btn');
                         if (menuBtn) {
+                            actionsDiv.insertBefore(likeBtn, menuBtn);
                             actionsDiv.insertBefore(addToPlaylistBtn, menuBtn);
                         } else {
+                            actionsDiv.appendChild(likeBtn);
                             actionsDiv.appendChild(addToPlaylistBtn);
+                        }
+
+                        if (trackData) {
+                            this.updateLikeState(item, trackData.type || 'track', trackData.id);
                         }
                     }
                 });
@@ -5026,9 +5041,9 @@ export class UIRenderer {
         let trackItems = Array.from(container.querySelectorAll('.track-item'));
 
         trackItems.forEach((item, index) => {
-            // Re-bind data to cloned elements
             if (tracks[index]) {
                 trackDataStore.set(item, tracks[index]);
+                this.updateLikeState(item, tracks[index].type || 'track', tracks[index].id);
             }
             item.draggable = true;
             item.dataset.index = index;

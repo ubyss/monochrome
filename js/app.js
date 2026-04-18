@@ -2198,7 +2198,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                         (Array.isArray(playlist?.images) && playlist.images.length > 0 ? playlist.images[0] : null) ||
                         playlist?.tracks?.find((t) => t?.album?.cover)?.album?.cover ||
                         fallbackCover;
-                    if (coverCandidate.startsWith('http') || coverCandidate.startsWith('data:') || coverCandidate.startsWith('/')) {
+                    if (
+                        coverCandidate.startsWith('http') ||
+                        coverCandidate.startsWith('data:') ||
+                        coverCandidate.startsWith('/')
+                    ) {
                         return coverCandidate;
                     }
                     return MusicAPI.instance.getCoverUrl(coverCandidate);

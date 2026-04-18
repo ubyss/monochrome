@@ -49,17 +49,20 @@ async function ffmpegWorker(
     onProgress = null,
     signal = null,
     extraFiles = [],
-    logConsole = true
+    logConsole = true,
+    rawArgs = false
 ) {
     const audioData = audioBlob ? await audioBlob.arrayBuffer() : null;
     const assets = loadFfmpeg();
 
     return new Promise((resolve, reject) => {
+        let endCategory = null;
         const worker = new FfmpegWorker();
 
         // Handle abort signal
         const abortHandler = () => {
             worker.terminate();
+            endCategory?.();
             reject(new FfmpegError('FFMPEG aborted'));
         };
 
@@ -72,20 +75,30 @@ async function ffmpegWorker(
         }
 
         worker.onmessage = (e) => {
-            const { type, blob, message, stage, progress } = e.data;
+            const { type, blob, message, stage, progress, command } = e.data;
 
             if (type === 'complete') {
                 if (signal) signal.removeEventListener('abort', abortHandler);
                 worker.terminate();
+                endCategory?.();
                 resolve(blob);
             } else if (type === 'error') {
                 if (signal) signal.removeEventListener('abort', abortHandler);
                 worker.terminate();
+                endCategory?.();
                 reject(new FfmpegError(message));
             } else if (type === 'progress' && message) {
                 onProgress?.(new FfmpegProgress(stage, progress || 0, message));
             } else if (type === 'progress' && stage != 'loading' && progress !== null) {
                 onProgress?.(new FfmpegProgress(stage, progress || 0, message));
+            } else if (type === 'command') {
+                if (logConsole) {
+                    const consoleCategory = `ffmpeg ${command?.join(' ')}`;
+                    // eslint-disable-next-line no-console
+                    console.groupCollapsed(consoleCategory);
+                    // eslint-disable-next-line no-console
+                    endCategory = () => console.groupEnd();
+                }
             } else if (type === 'log') {
                 onProgress?.(new FfmpegProgress('stdout', 0, message));
                 if (logConsole) {
@@ -97,10 +110,11 @@ async function ffmpegWorker(
         worker.onerror = (error) => {
             if (signal) signal.removeEventListener('abort', abortHandler);
             worker.terminate();
+            endCategory?.();
             reject(new FfmpegError('Worker failed: ' + error.message));
         };
 
-        (async () => {
+        void (async () => {
             const transferables = [];
             if (audioData) transferables.push(audioData);
             for (const f of extraFiles) {
@@ -115,7 +129,7 @@ async function ffmpegWorker(
                 {
                     audioData,
                     extraFiles,
-                    args,
+                    ...(rawArgs ? { rawArgs: args } : { args }),
                     output: {
                         name: outputName,
                         mime: outputMime,
@@ -140,6 +154,7 @@ async function ffmpegWorker(
  * @param {AbortSignal|null} [opts.signal=null] - Optional abort signal to cancel encoding
  * @param {Array} [opts.extraFiles=[]] - Additional files to provide to FFmpeg
  * @param {Boolean} [opts.logConsole=true] - Whether to log FFmpeg output to the console
+ * @param {string[]} [opts.rawArgs=[]] - Whether to pass args as raw command line (without default input/output)
  * @returns {Promise<Blob>} Encoded audio blob
  * @throws {FfmpegError} If Web Workers are not available
  * @throws {Error} If FFmpeg encoding fails
@@ -154,6 +169,7 @@ export async function ffmpeg(
         signal = null,
         extraFiles = [],
         logConsole = true,
+        rawArgs = null,
     } = {}
 ) {
     try {
@@ -161,13 +177,14 @@ export async function ffmpeg(
         if (typeof Worker !== 'undefined') {
             return await ffmpegWorker(
                 audioBlob,
-                args,
+                rawArgs || args,
                 outputName,
                 outputMime,
                 onProgress,
                 signal,
                 extraFiles,
-                logConsole
+                logConsole,
+                !!rawArgs
             );
         }
 

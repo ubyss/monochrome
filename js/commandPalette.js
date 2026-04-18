@@ -338,9 +338,9 @@ class CommandPalette {
                 icon: 'trash',
                 label: 'Clear Queue',
                 keywords: ['wipe', 'clear', 'empty', 'queue'],
-                action: () => {
+                action: async () => {
                     Player.instance.wipeQueue();
-                    this.notify('Queue cleared');
+                    await this.notify('Queue cleared');
                 },
             },
             {
@@ -563,12 +563,12 @@ class CommandPalette {
                 action: () => this.setQuality('LOSSLESS'),
             },
             {
-                id: 'quality-hires',
+                id: 'quality-lossless',
                 group: 'Audio',
                 icon: 'sliders',
-                label: 'Quality: Hi-Res',
-                keywords: ['quality', 'hires', 'hi-res', 'master', 'mqa', 'streaming'],
-                action: () => this.setQuality('HI_RES_LOSSLESS'),
+                label: 'Quality: Lossless',
+                keywords: ['quality', 'lossless', 'flac', 'streaming'],
+                action: () => this.setQuality('LOSSLESS'),
             },
             {
                 id: 'sleep-15',
@@ -674,7 +674,7 @@ class CommandPalette {
                 keywords: ['edit', 'profile', 'username', 'avatar', 'display name'],
                 action: async () => {
                     const { openEditProfile } = await import('./profile.js');
-                    openEditProfile();
+                    await openEditProfile();
                 },
             },
             {
@@ -780,7 +780,7 @@ class CommandPalette {
             this.updateSelection();
         } else if (e.key === 'Enter') {
             e.preventDefault();
-            this.executeSelected();
+            this.executeSelected().catch(console.error);
         } else if (e.key === 'Escape') {
             if (this.settingsMode) {
                 this.settingsMode = false;
@@ -1036,9 +1036,9 @@ class CommandPalette {
 
         el.innerHTML = `${iconHtml}<div class="cmdk-item-content"><span class="cmdk-item-label">${escapeHtml(item.label)}</span>${descHtml}</div>${shortcutHtml}`;
 
-        el.addEventListener('click', () => {
+        el.addEventListener('click', async () => {
             this.selectedIndex = index;
-            this.executeSelected();
+            await this.executeSelected();
         });
 
         el.addEventListener('mouseenter', () => {
@@ -1171,14 +1171,14 @@ class CommandPalette {
             if (opt.dataset.theme === theme) opt.classList.add('active');
             else opt.classList.remove('active');
         });
-        this.notify(`Theme set to ${theme}`);
+        await this.notify(`Theme set to ${theme}`);
     }
 
     async toggleVisualizer() {
         const { visualizerSettings } = await import('./storage.js');
         const current = visualizerSettings.isEnabled();
         visualizerSettings.setEnabled(!current);
-        this.notify(`Visualizer ${!current ? 'enabled' : 'disabled'}`);
+        await this.notify(`Visualizer ${!current ? 'enabled' : 'disabled'}`);
 
         const overlay = document.getElementById('fullscreen-cover-overlay');
         if (overlay && getComputedStyle(overlay).display !== 'none') {
@@ -1192,7 +1192,7 @@ class CommandPalette {
         if (UIRenderer.instance.visualizer) {
             UIRenderer.instance.visualizer.setPreset(preset);
         }
-        this.notify(`Visualizer preset: ${preset}`);
+        await this.notify(`Visualizer preset: ${preset}`);
     }
 
     async setQuality(quality) {
@@ -1206,7 +1206,7 @@ class CommandPalette {
 
         if (Player.instance) {
             // Set fallback API quality (Auto maps back to Hi-Res)
-            const apiQuality = quality === 'auto' ? 'HI_RES_LOSSLESS' : quality;
+            const apiQuality = quality === 'auto' ? 'LOSSLESS' : quality;
             Player.instance.setQuality(apiQuality);
             localStorage.setItem('playback-quality', apiQuality);
 
@@ -1220,18 +1220,18 @@ class CommandPalette {
 
         const { downloadQualitySettings } = await import('./storage.js');
         // Do not pass auto to download quality, resolve it to original fallback
-        const dlQuality = quality === 'auto' ? 'HI_RES_LOSSLESS' : quality;
+        const dlQuality = quality === 'auto' ? 'LOSSLESS' : quality;
         downloadQualitySettings.setQuality(dlQuality);
         const downloadSelect = document.getElementById('download-quality-setting');
         if (downloadSelect) downloadSelect.value = dlQuality;
 
-        this.notify(`Quality set to ${qualityNames[quality] || quality}`);
+        await this.notify(`Quality set to ${qualityNames[quality] || quality}`);
     }
 
-    setSleepTimer(minutes) {
+    async setSleepTimer(minutes) {
         if (Player.instance) {
             Player.instance.setSleepTimer(minutes);
-            this.notify(`Sleep timer: ${minutes} minutes`);
+            await this.notify(`Sleep timer: ${minutes} minutes`);
         }
     }
 
@@ -1242,7 +1242,7 @@ class CommandPalette {
 
         const queue = player.getCurrentQueue();
         if (queue.length === 0) {
-            this.notify('Queue is empty');
+            await this.notify('Queue is empty');
             return;
         }
 
@@ -1250,7 +1250,7 @@ class CommandPalette {
         const scrobbler = window.monochromeScrobbler;
 
         let likedCount = 0;
-        this.notify('Liking all tracks in queue...');
+        await this.notify('Liking all tracks in queue...');
         for (const track of queue) {
             const isLiked = await db.isFavorite('track', track.id);
             if (!isLiked) {
@@ -1258,7 +1258,7 @@ class CommandPalette {
                 likedCount++;
             }
         }
-        this.notify(`Liked ${likedCount} new track(s)`);
+        await this.notify(`Liked ${likedCount} new track(s)`);
     }
 
     async downloadQueue() {
@@ -1268,40 +1268,39 @@ class CommandPalette {
 
         const queue = player.getCurrentQueue();
         if (queue.length === 0) {
-            this.notify('Queue is empty');
+            await this.notify('Queue is empty');
             return;
         }
 
         const { downloadTracks } = await import('./downloads.js');
         const { downloadQualitySettings } = await import('./storage.js');
-        downloadTracks(queue, ui.api, downloadQualitySettings.getQuality(), ui.lyricsManager);
+        await downloadTracks(queue, ui.api, downloadQualitySettings.getQuality(), ui.lyricsManager);
     }
 
     async createPlaylist() {
         const name = `New Playlist ${new Date().toLocaleDateString()}`;
         await db.createPlaylist(name);
         navigate('/library');
-        this.notify('Playlist created');
+        await this.notify('Playlist created');
     }
 
     async createFolder() {
         const name = `New Folder ${new Date().toLocaleDateString()}`;
         await db.createFolder(name);
         navigate('/library');
-        this.notify('Folder created');
+        await this.notify('Folder created');
     }
 
     async clearCache() {
         const api = UIRenderer.instance.api;
         if (api) {
             await api.clearCache();
-            this.notify('Cache cleared');
+            await this.notify('Cache cleared');
         }
     }
 
     async notify(message) {
-        const { showNotification } = await import('./downloads.js');
-        showNotification(message);
+        await import('./downloads.js').then((m) => m.showNotification(message)).catch(console.error);
     }
 }
 

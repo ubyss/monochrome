@@ -201,7 +201,7 @@ export class Equalizer {
         this.frequencyLabels = generateFrequencyLabels(this.frequencies);
 
         // Interpolate current gains to new band count
-        const newGains = equalizerSettings._interpolateGains(this.currentGains, newCount);
+        const newGains = equalizerSettings.interpolateGains(this.currentGains, newCount);
         this.currentGains = newGains;
         equalizerSettings.setGains(newGains);
 
@@ -455,7 +455,7 @@ export class Equalizer {
         // Ensure gains array matches current band count
         let adjustedGains = gains;
         if (gains.length !== this.bandCount) {
-            adjustedGains = equalizerSettings._interpolateGains(gains, this.bandCount);
+            adjustedGains = equalizerSettings.interpolateGains(gains, this.bandCount);
         }
 
         const now = this.audioContext?.currentTime || 0;
@@ -621,8 +621,12 @@ export class Equalizer {
 
         this.frequencies.forEach((freq, index) => {
             const gain = this.currentGains[index] || 0;
+            const type = this.currentTypes[index] || 'peaking';
+            const typeMap = { peaking: 'PK', lowshelf: 'LSC', highshelf: 'HSC' };
+            const typeStr = typeMap[type] || 'PK';
+            const q = this.currentQs[index] || this._calculateQ(index);
             const filterNum = index + 1;
-            lines.push(`Filter ${filterNum}: ON PK Fc ${freq} Hz Gain ${gain.toFixed(1)} dB Q 0.71`);
+            lines.push(`Filter ${filterNum}: ON ${typeStr} Fc ${freq} Hz Gain ${gain.toFixed(1)} dB Q ${q.toFixed(2)}`);
         });
 
         return lines.join('\n');
@@ -652,13 +656,13 @@ export class Equalizer {
 
                 // Parse filter lines (handle "Filter:" and "Filter X:" formats)
                 const filterMatch = line.match(
-                    /^Filter\s*\d*:\s*ON\s+(\w+)\s+Fc\s+(\d+)\s+Hz\s+Gain\s*([+-]?\d+\.?\d*)\s*dB\s+Q\s+(\d+\.?\d*)/i
+                    /^Filter\s*\d*:\s*ON\s+(\w+)\s+Fc\s+(\d+)\s+Hz\s+Gain\s*([+-]?\d+\.?\d*)\s*dB(?:\s+Q\s+(\d+\.?\d*))?/i
                 );
                 if (filterMatch) {
                     const type = filterMatch[1].toUpperCase();
                     const freq = parseInt(filterMatch[2], 10);
                     const gain = parseFloat(filterMatch[3]);
-                    const q = parseFloat(filterMatch[4]);
+                    const q = filterMatch[4] ? parseFloat(filterMatch[4]) : Math.SQRT1_2;
                     filters.push({ type, freq, gain, q });
                 }
             }
@@ -680,15 +684,52 @@ export class Equalizer {
                 this.setBandCount(newCount);
             }
 
-            // Extract gains from filters
-            const gains = filters.slice(0, this.bandCount).map((f) => f.gain);
+            // Apply imported filter frequencies directly instead of regenerating
+            const sliced = filters.slice(0, this.bandCount);
+            const newFreqs = sliced.map((f) => f.freq);
+            this.frequencies = newFreqs;
+            this.frequencyLabels = generateFrequencyLabels(newFreqs);
+
+            // Update filter frequencies on the actual biquad nodes
+            if (this.filters.length === newFreqs.length) {
+                newFreqs.forEach((freq, i) => {
+                    if (this.filters[i]) {
+                        this.filters[i].frequency.value = freq;
+                    }
+                });
+            }
+
+            // Extract and apply gains, types, and Qs
+            const gains = sliced.map((f) => f.gain);
             this.setAllGains(gains);
 
-            // Store filter frequencies if different
-            const newFreqs = filters.slice(0, this.bandCount).map((f) => f.freq);
-            if (JSON.stringify(newFreqs) !== JSON.stringify(this.frequencies)) {
-                equalizerSettings.setFreqRange(newFreqs[0], newFreqs[newFreqs.length - 1]);
+            // Apply filter types (PK/LS/HS -> peaking/lowshelf/highshelf)
+            const typeMap = { PK: 'peaking', LS: 'lowshelf', HS: 'highshelf', LSC: 'lowshelf', HSC: 'highshelf' };
+            const types = sliced.map((f) => typeMap[f.type] || 'peaking');
+            this.currentTypes = types;
+            if (this.filters.length === types.length) {
+                types.forEach((type, i) => {
+                    if (this.filters[i]) this.filters[i].type = type;
+                });
             }
+            equalizerSettings.setBandTypes(types);
+
+            // Apply Q values
+            const qs = sliced.map((f) => f.q);
+            this.currentQs = qs;
+            if (this.filters.length === qs.length) {
+                qs.forEach((q, i) => {
+                    if (this.filters[i]) this.filters[i].Q.value = q;
+                });
+            }
+            equalizerSettings.setBandQs(qs);
+
+            // Persist custom frequencies and update freqRange
+            equalizerSettings.setCustomFrequencies(newFreqs);
+            const minFreq = Math.min(...newFreqs);
+            const maxFreq = Math.max(...newFreqs);
+            this.freqRange = { min: minFreq, max: maxFreq };
+            equalizerSettings.setFreqRange(minFreq, maxFreq);
 
             return true;
         } catch (e) {

@@ -40,6 +40,12 @@ export function createRouter(ui) {
         };
 
         switch (page) {
+            case 'parties':
+                await ui.renderPartiesPage();
+                break;
+            case 'party':
+                await ui.renderPartyDetailPage(param);
+                break;
             case 'search':
                 await ui.renderSearchPage(decodeURIComponent(param));
                 break;
@@ -107,6 +113,9 @@ export function createRouter(ui) {
                 break;
             case 'home':
                 await ui.renderHomePage();
+                break;
+            case 'reset-password':
+                await ui.renderResetPasswordPage();
                 break;
             case 'donate':
                 ui.showPage('donate');

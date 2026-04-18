@@ -30,7 +30,7 @@ export class DashDownloader {
 
             await Promise.all(
                 urls.map(async (url) => {
-                    const result = await fetch(url, { method: 'HEAD', signal });
+                    const result = await fetch(getProxyUrl(url), { method: 'HEAD', signal });
 
                     if (result.ok) {
                         const contentLength = result.headers.get('Content-Length');
@@ -75,7 +75,7 @@ export class DashDownloader {
 
             onProgress?.(new SegmentedDownloadProgress(downloadedBytes, totalSize ?? undefined, i, totalSegments));
 
-            const url = urls[i];
+            const url = getProxyUrl(urls[i]);
             const segmentResponse = await fetch(url, { signal });
 
             if (!segmentResponse.ok) {
@@ -204,13 +204,13 @@ export class DashDownloader {
         const resolveTemplate = (template: string, number: number, time: number): string => {
             return template
                 .replace(/\$RepresentationID\$/g, repId ?? '')
-                .replace(/\$Number(?:%0([0-9]+)d)?\$/g, (_, width) => {
+                .replace(/\$Number(?:%0([0-9]+)d)?\$/g, (_, width: string) => {
                     if (width) {
                         return number.toString().padStart(parseInt(width), '0');
                     }
                     return number.toString();
                 })
-                .replace(/\$Time(?:%0([0-9]+)d)?\$/g, (_, width) => {
+                .replace(/\$Time(?:%0([0-9]+)d)?\$/g, (_, width: string) => {
                     if (width) {
                         return time.toString().padStart(parseInt(width), '0');
                     }

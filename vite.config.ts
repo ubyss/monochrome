@@ -1,14 +1,32 @@
 import path from 'path';
 import { defineConfig } from 'vite';
+import type { UserConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import authGatePlugin from './vite-plugin-auth-gate.js';
 import blobAssetPlugin from './vite-plugin-blob.js';
 import svgUse from './vite-plugin-svg-use.js';
 import uploadPlugin from './vite-plugin-upload.js';
 // import purgecss from 'vite-plugin-purgecss';
-import { playwright } from '@vitest/browser-playwright';
 import { execSync } from 'child_process';
 import purgecss from 'vite-plugin-purgecss';
+
+async function vitestConfig(): Promise<Pick<UserConfig, 'test'> | Record<string, never>> {
+    const runVitest = process.env.VITEST === 'true' || process.argv.some((a) => a.includes('vitest'));
+    if (!runVitest) {
+        return {};
+    }
+    const { playwright } = await import('@vitest/browser-playwright');
+    return {
+        test: {
+            browser: {
+                enabled: true,
+                provider: playwright(),
+                headless: !!process.env.HEADLESS,
+                instances: [{ browser: 'chromium' }],
+            },
+        },
+    };
+}
 
 function proxyAudioPlugin() {
     return {
@@ -27,19 +45,12 @@ function getGitCommitHash() {
     }
 }
 
-export default defineConfig((_options) => {
+export default defineConfig(async (_options) => {
     const commitHash = getGitCommitHash();
+    const vitest = await vitestConfig();
 
     return {
-        test: {
-            // https://vitest.dev/guide/browser/
-            browser: {
-                enabled: true,
-                provider: playwright(),
-                headless: !!process.env.HEADLESS,
-                instances: [{ browser: 'chromium' }],
-            },
-        },
+        ...vitest,
         base: './',
         define: {
             __COMMIT_HASH__: JSON.stringify(commitHash),

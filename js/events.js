@@ -26,7 +26,6 @@ import { audioContextManager } from './audio-context.js';
 import { hapticLongPress, hapticMedium, hapticLight } from './haptics.js';
 import { SVG_BIN, SVG_MUTE, SVG_PAUSE, SVG_PLAY, SVG_VOLUME, SVG_CHECKBOX, SVG_CHECKBOX_CHECKED } from './icons.js';
 import { partyManager } from './listening-party.js';
-import { MusicAPI } from './music-api.js';
 import { LyricsManager } from './lyrics.js';
 import { Player } from './player.js';
 
@@ -234,25 +233,18 @@ function toggleTrackSelection(trackItem, ctrlHeld, shiftHeld) {
     document.dispatchEvent(new CustomEvent('track-selection-changed'));
 }
 
-async function showMultiSelectPlaylistModal(tracks) {
-    const modal = document.createElement('div');
-    modal.className = 'modal-overlay';
-    modal.style.cssText =
-        'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; z-index: 10000;';
-    modal.innerHTML = `
-        <div class="modal-content" style="background: var(--card); border-radius: var(--radius); padding: 1.5rem; min-width: 350px; max-width: 90%; max-height: 80vh; overflow-y: auto; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.75rem;">
-                <h3 style="margin: 0;">Add to Playlist</h3>
-                <button class="modal-close" style="background: none; border: none; color: var(--foreground); font-size: 1.5rem; cursor: pointer; padding: 0; line-height: 1;">&times;</button>
-            </div>
-            <div class="playlist-body" style="max-height: 300px; overflow-y: auto;">
-                <div class="create-new-playlist" style="padding: 12px; cursor: pointer; border-bottom: 1px solid var(--border); color: var(--primary); font-weight: 500;">
-                    + Create new playlist
-                </div>
-                <div class="playlist-list"></div>
-            </div>
-        </div>
-    `;
+function showMultiSelectPlaylistModal(tracks, options = {}) {
+    const { mode = 'add', sourcePlaylistId = null, sourceFromLikes = false, ui = null } = options;
+    const isMove = mode === 'move' && (sourcePlaylistId || sourceFromLikes);
+    const title = isMove ? 'Move to playlist' : 'Add to playlist';
+    const api = MusicAPI.instance;
+    const modal = document.getElementById('playlist-select-modal');
+    const listEl = document.getElementById('playlist-select-list');
+    const closeBtn = document.getElementById('playlist-select-close');
+    const createBtn = document.getElementById('playlist-select-create');
+    const overlay = modal.querySelector('.modal-overlay');
+    const titleEl = document.getElementById('playlist-select-title');
+    titleEl.textContent = title;
 
     const closeModal = () => {
         modal.classList.remove('active');
@@ -269,13 +261,40 @@ async function showMultiSelectPlaylistModal(tracks) {
         document.dispatchEvent(new CustomEvent('bulk-selection-clear'));
     };
 
-    document.body.appendChild(modal);
-    document.body.style.overflow = 'hidden';
-
-    await db.getPlaylists(true).then((playlists) => {
-        const listEl = modal.querySelector('.playlist-list');
-        if (playlists.length === 0) {
-            listEl.innerHTML = '<div style="padding: 12px; color: var(--muted-foreground);">No playlists yet</div>';
+    const applyPlaylistPick = async (targetPlaylistId) => {
+        if (isMove && sourcePlaylistId && targetPlaylistId === sourcePlaylistId) {
+            showNotification('Choose a different playlist');
+            return;
+        }
+        for (const track of tracks) {
+            await db.addTrackToPlaylist(targetPlaylistId, track);
+        }
+        syncManager.syncUserPlaylist(await db.getPlaylist(targetPlaylistId), 'update');
+        if (isMove) {
+            if (sourceFromLikes) {
+                for (const track of tracks) {
+                    const ty = track.type || 'track';
+                    if (await db.isFavorite(ty, track.id)) {
+                        await db.toggleFavorite(ty, track);
+                        syncManager.syncLibraryItem(ty, track, false);
+                    }
+                }
+                const mainEl = document.querySelector('.main-content');
+                const scrollTop = mainEl?.scrollTop;
+                if (ui) {
+                    await ui.renderLibraryPage();
+                }
+                if (mainEl && scrollTop != null) mainEl.scrollTop = scrollTop;
+                document.dispatchEvent(new CustomEvent('bulk-selection-clear'));
+                showNotification(`Moved ${tracks.length} song${tracks.length === 1 ? '' : 's'}`);
+            } else {
+                for (const track of tracks) {
+                    await db.removeTrackFromPlaylist(sourcePlaylistId, track.id, track.type || 'track');
+                }
+                syncManager.syncUserPlaylist(await db.getPlaylist(sourcePlaylistId), 'update');
+                await finishMoveFromSource();
+                showNotification(`Moved ${tracks.length} song${tracks.length === 1 ? '' : 's'}`);
+            }
         } else {
             showNotification(`Added ${tracks.length} song${tracks.length === 1 ? '' : 's'} to playlist`);
         }
@@ -351,17 +370,12 @@ async function showMultiSelectPlaylistModal(tracks) {
                     syncManager.syncUserPlaylist(await db.getPlaylist(sourcePlaylistId), 'update');
                     await finishMoveFromSource();
                 }
-                await syncManager.syncUserPlaylist(await db.getPlaylist(playlistId), 'update');
-                showNotification(`Added ${tracks.length} tracks to playlist`);
+                document.dispatchEvent(new CustomEvent('bulk-selection-clear'));
+                showNotification(`Moved ${tracks.length} song${tracks.length === 1 ? '' : 's'} to "${name}"`);
                 closeModal();
             });
-        });
-    });
-
-    modal.querySelector('.create-new-playlist').addEventListener('click', async () => {
-        const name = prompt('Playlist name:');
-        if (name) {
-            await db.createPlaylist(name, tracks).then((_playlist) => {
+        } else {
+            db.createPlaylist(name, tracks).then(() => {
                 showNotification(`Created playlist "${name}" with ${tracks.length} tracks`);
                 closeModal();
             });
@@ -380,7 +394,7 @@ async function showMultiSelectPlaylistModal(tracks) {
     createBtn.addEventListener('click', handleCreateClick);
     listEl.addEventListener('click', handleOptionClick);
 
-    renderModal();
+    void renderModal();
     modal.classList.add('active');
 }
 
@@ -2719,7 +2733,6 @@ export function initializeTrackInteractions(player, api, mainContent, contextMen
                         showNotification(`Liked ${selectedTracks.length} tracks`);
                         clearSelection();
                         break;
-                    }
                     case 'add-to-playlist':
                         await showMultiSelectPlaylistModal(selectedTracks);
                         clearSelection();
